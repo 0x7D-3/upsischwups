@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { join, relative, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 const startedAt = Date.now();
@@ -28,4 +28,63 @@ for (const fileName of ['index.html', '404.html']) {
   writeFileSync(filePath, fixed, 'utf8');
 }
 
-console.log('Static GitHub Pages build is ready in dist/client.');
+function listFiles(directory) {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(directory, entry.name);
+    return entry.isDirectory() ? listFiles(path) : [path];
+  });
+}
+
+const cachedAssets = listFiles(outputDirectory)
+  .map((filePath) => relative(outputDirectory, filePath).split(sep).join('/'))
+  .filter((fileName) => fileName !== 'sw.js' && !fileName.endsWith('.map'))
+  .map((fileName) => `./${fileName}`);
+cachedAssets.unshift('./');
+
+const serviceWorker = `const CACHE_NAME = 'schultag-shell-v3';
+const ROOT = new URL('./', self.registration.scope).href;
+const CORE_ASSETS = ${JSON.stringify(cachedAssets, null, 2)}.map((path) => new URL(path, self.registration.scope).href);
+
+self.addEventListener('install', (event) => {
+  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(CORE_ASSETS)));
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    caches.keys()
+      .then((keys) => Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))))
+      .then(() => self.clients.claim()),
+  );
+});
+
+self.addEventListener('fetch', (event) => {
+  const request = event.request;
+  if (request.method !== 'GET') return;
+  const url = new URL(request.url);
+  if (url.origin !== self.location.origin) return;
+
+  if (request.mode === 'navigate') {
+    event.respondWith(fetch(request).then((response) => {
+      if (response.ok) {
+        const copy = response.clone();
+        event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.put(ROOT, copy)));
+      }
+      return response;
+    }).catch(() => caches.match(ROOT)));
+    return;
+  }
+
+  event.respondWith(caches.match(request).then((cached) => cached ?? fetch(request).then((response) => {
+    if (response.ok) {
+      const copy = response.clone();
+      event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.put(request, copy)));
+    }
+    return response;
+  })));
+});
+`;
+
+writeFileSync(join(outputDirectory, 'sw.js'), serviceWorker, 'utf8');
+
+console.log(`Static GitHub Pages build is ready with ${cachedAssets.length} offline assets.`);

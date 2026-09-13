@@ -1,4 +1,5 @@
-const CACHE_NAME = 'schultag-shell-v1';
+// The production build replaces this file with a generated complete asset list.
+const CACHE_NAME = 'schultag-shell-v3-dev';
 const ROOT = new URL('./', self.registration.scope).href;
 const CORE_ASSETS = [
   ROOT,

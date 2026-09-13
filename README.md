@@ -1,40 +1,57 @@
-# Schultag PWA — Testversion 0.1
+# Schultag PWA — Testversion 0.3
 
 „Alles, was du während eines Schultags brauchst – selbst wenn das WLAN nicht funktioniert.“
 
-Diese erste Version ist eine installierbare Website für iPad und iPhone. Sie speichert Chat, Aufgaben, Notizen und das lokale Profil direkt im Browser. Bereits geladene App-Dateien werden über einen Service Worker offline verfügbar gehalten.
+Schultag ist ein kostenloser Local-First-Prototyp für iPad und iPhone. Profile, Kontakte, Nachrichten, Aufgaben, Notizen, kryptografische Schlüssel und wartende Pakete liegen pro Konto getrennt in IndexedDB. Nach dem ersten vollständigen Laden hält der Service Worker alle App-Dateien für den Offline-Start vor.
 
 ## Was in diesem Test funktioniert
 
-- iPad-optimierte Oberfläche mit Heute, Chat, Nearby, Aufgaben und Profil
-- lokaler Chatverlauf im Browser-Speicher
-- eindeutige Nachrichten-IDs
-- Zustände `ausstehend`, `gesendet` und `angekommen`
-- automatische Übertragung wartender Nachrichten nach einer Direktverbindung
-- lokale Aufgaben und Notizen
-- direktes Teilen einer Aufgabe bei aktiver Verbindung
-- installierbare PWA mit Manifest und Offline-Cache
+- mehrere lokale Konten mit eigener dauerhafter Datenablage und persönlicher, aus den öffentlichen Schlüsseln abgeleiteter ID
+- Kontaktkarten, die nur einmal per AirDrop, Kopieren oder einem anderen Kanal ausgetauscht werden müssen
+- Ende-zu-Ende verschlüsselte und signierte Textnachrichten
+- lokale Warteschlange mit den Zuständen `ausstehend`, `unterwegs` und `angekommen`
+- signierte Zustellbestätigungen
+- verschlüsseltes Store-and-Forward: ein verbundenes Gerät kann ein unlesbares Paket begrenzt zwischenspeichern und später weiterreichen
+- automatischer Austausch aller fehlenden Pakete und Bestätigungen nach einer WebRTC-Verbindung
+- Aufgaben erstellen, abhaken und verschlüsselt teilen
+- persönliche Notizen
+- passwortverschlüsselte Konto-Backups einschließlich ID und privater Schlüssel
+- installierbare PWA mit vollständigem Offline-App-Cache
 - kostenloser GitHub-Pages-Workflow
 
-## Grenze der Web-Version
+## Wichtige Grenze der PWA
 
-Safari-Web-Apps dürfen keine Apple-Geräte automatisch über Bluetooth, Apple Peer-to-Peer-WLAN oder Wi-Fi Aware suchen. Der Test verwendet deshalb einen WebRTC-Datenkanal und manuelle Kopplungscodes. Beide Geräte müssen im selben lokalen WLAN oder persönlichen Hotspot sein. Für automatische Suche ohne vorhandenes Netz ist später eine native Swift-App erforderlich.
+Safari-Web-Apps können andere Apple-Geräte nicht selbstständig über Bluetooth, Apple Peer-to-Peer-WLAN oder Wi-Fi Aware suchen. Eine PWA darf außerdem nicht dauerhaft im Hintergrund Verbindungen halten. Deshalb gilt für diesen Prototyp:
 
-WebRTC verschlüsselt den Transport. Diese Testversion hat aber noch keine geprüften Schulidentitäten, keine App-eigene Ende-zu-Ende-Schlüsselverwaltung und keine verschlüsselte lokale Datenbank. Deshalb nur Testdaten verwenden.
+- Beide Geräte müssen die App geöffnet haben.
+- Sie müssen sich im selben lokalen WLAN oder persönlichen Hotspot befinden. Der Hotspot benötigt für den anschließenden Datenaustausch keinen Internetzugang.
+- Für jede neue Sitzung wird ein WebRTC-Start- und Antwortcode ausgetauscht.
+- Kontaktkarte und persönliche ID bleiben dagegen dauerhaft gespeichert und müssen nur einmal ausgetauscht werden.
+- Store-and-Forward passiert beim späteren manuellen Verbinden; es ist kein automatisch funktes Mesh.
 
-## Direktverbindung testen
+Für automatische Gerätesuche und echte Direktverbindungen ohne vorhandenes Netz ist später eine native, signierte Swift-App nötig.
 
-1. Die PWA auf beiden Geräten einmal von der GitHub-Pages-Adresse laden.
-2. Beide Geräte mit demselben lokalen WLAN oder persönlichen Hotspot verbinden. Internetzugang ist für die eigentliche Verbindung nicht nötig.
-3. Auf beiden Geräten `Nearby` öffnen.
-4. Gerät A wählt `Dieses Gerät startet` und teilt den Start-Code per AirDrop.
-5. Gerät B wählt `Dieses Gerät tritt bei`, fügt den Start-Code ein und erzeugt eine Antwort.
-6. Gerät B teilt den Antwort-Code zurück. Gerät A fügt ihn ein und schließt die Verbindung ab.
-7. Unter `Chat` eine Nachricht senden. Ohne Verbindung bleibt sie lokal ausstehend; mit Verbindung wird sie direkt übertragen und bestätigt.
+## Test mit iPhone und iPad
+
+1. Öffne die veröffentlichte Seite auf beiden Geräten einmal vollständig in Safari.
+2. Tippe auf `Teilen → Zum Home-Bildschirm` und starte danach die installierte App.
+3. Lege auf jedem Gerät unter `Profil` ein eigenes Konto mit eigenem Namen an.
+4. Teile die jeweilige Kontaktkarte per AirDrop und füge sie auf dem anderen Gerät ein. Das ist nur einmal nötig.
+5. Verbinde beide Geräte mit demselben WLAN oder persönlichen Hotspot.
+6. Öffne auf beiden Geräten `Nearby`. Gerät A erstellt den Start-Code, Gerät B erzeugt daraus den Antwort-Code, Gerät A übernimmt die Antwort.
+7. Sende im Chat eine Nachricht. Ohne aktive Verbindung bleibt sie verschlüsselt in der Warteschlange; nach der nächsten Kopplung wird sie automatisch übertragen und bestätigt.
+
+Um Store-and-Forward zu testen, werden drei getrennte Konten auf drei Browser-Installationen beziehungsweise Geräten benötigt: A erstellt eine Nachricht an C, A verbindet sich zunächst mit B und später B mit C. B sieht nur das verschlüsselte Paket. Die Bestätigung kann auf demselben Weg zu A zurückwandern.
+
+## Datensicherheit im Prototyp
+
+Nachrichten und geteilte Aufgaben werden vor der Weitergabe mit einem einmaligen P-256-Schlüsselpaar und AES-GCM verschlüsselt und vom Absender mit ECDSA signiert. Relaisgeräte erhalten keinen Klartext. Die App-Daten selbst liegen im vom Browser verwalteten Gerätespeicher; sie sind nicht zusätzlich als gesamte Datenbank verschlüsselt. Deshalb schützt das Gerätepasswort weiterhin den lokalen Zugriff.
+
+Safari kann Website-Daten unter besonderen Umständen entfernen. Unter `Profil` kann dauerhafter Speicher angefragt werden; zusätzlich sollten wichtige Konten regelmäßig als passwortverschlüsseltes Backup exportiert werden. Ohne dieses Backup ist eine gelöschte persönliche ID nicht wiederherstellbar.
 
 ## Lokal starten
 
-Voraussetzungen: Node.js 24 und pnpm 11.
+Voraussetzungen: Node.js 22.13 oder neuer und pnpm 11.
 
 ```bash
 pnpm install
@@ -43,20 +60,18 @@ pnpm dev
 
 Die Vorschau läuft anschließend normalerweise unter `http://localhost:3000`.
 
-## Für GitHub Pages bauen
+## Prüfen und für GitHub Pages bauen
 
 ```bash
+pnpm exec tsc --noEmit
 pnpm build
 ```
 
-Die fertige statische Website liegt in `dist/client`. Der enthaltene Workflow `.github/workflows/deploy-pages.yml` baut und veröffentlicht bei jedem Push auf `main`.
+Die fertige statische Website liegt in `dist/client`. Beim Build wird der Service Worker aus der vollständigen Asset-Liste erzeugt. Der Workflow `.github/workflows/deploy-pages.yml` baut und veröffentlicht bei jedem Push auf `main`.
 
-In GitHub einmal unter `Settings → Pages → Source` den Eintrag `GitHub Actions` auswählen.
+## Nächste sinnvolle Schritte
 
-## Auf den Home-Bildschirm
-
-In Safari die veröffentlichte Seite öffnen, `Teilen` antippen und `Zum Home-Bildschirm` wählen.
-
-## Sinnvoller nächster Schritt
-
-Nach dem Web-Test sollte eine kleine native SwiftUI-Version folgen. Für automatische Gerätesuche und Verbindungen ohne Access Point kommen auf aktuellen Apple-Systemen Network Framework mit Peer-to-Peer-WLAN beziehungsweise Wi-Fi Aware infrage. Dafür werden ein Mac mit Xcode, physische Testgeräte und App-Signierung benötigt.
+- QR-Codes für Kontaktkarten und WebRTC-Sitzungscodes
+- Ablaufanzeige und manuelles Löschen einzelner Relaispakete
+- Konfliktauflösung für gemeinsam bearbeitete Aufgaben
+- echte native SwiftUI-Test-App mit Network Framework und automatischer Nearby-Erkennung
