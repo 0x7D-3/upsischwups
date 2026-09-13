@@ -106,6 +106,12 @@ const navigation: Array<{ id: View; label: string; icon: typeof House; later?: b
   { id: 'games', label: 'Spiele', icon: Gamepad2, later: true },
 ];
 
+const mobileNavigation: Array<{ id: View; label: string; icon: typeof House; later?: boolean }> = [
+  ...navigation.slice(0, 4),
+  { id: 'profile', label: 'Profil', icon: CircleUserRound },
+  ...navigation.slice(4),
+];
+
 const lessons = [
   { time: '08:00', subject: 'Mathematik', room: 'Raum 204 · Frau König', current: true },
   { time: '09:45', subject: 'Englisch', room: 'Raum 112 · Herr Braun' },
@@ -738,14 +744,17 @@ export default function Home() {
     <main className="app-shell">
       <aside className="sidebar">
         <button className="brand-button" type="button" onClick={() => setView('today')} aria-label="Schultag Startseite"><span className="brand-mark"><span>S</span><i /></span><span className="brand-name">SCHULTAG<small>OFFLINE FIRST</small></span></button>
-        <nav className="nav-list" aria-label="Hauptnavigation">
+        <nav className="nav-list desktop-navigation" aria-label="Hauptnavigation">
           {navigation.map(({ id, label, icon: Icon, later }) => <button key={id} className={`nav-item ${view === id ? 'is-active' : ''}`} type="button" onClick={() => setView(id)}><Icon /><span>{label}</span>{id === 'nearby' && connected ? <b className="nav-live">1</b> : null}{id === 'chat' && pendingMessages.length ? <b>{pendingMessages.length}</b> : null}{later ? <em>BALD</em> : null}</button>)}
+        </nav>
+        <nav className="mobile-navigation" aria-label="Mobile Hauptnavigation">
+          {mobileNavigation.map(({ id, label, icon: Icon, later }) => <button key={id} className={`nav-item ${view === id ? 'is-active' : ''}`} type="button" onClick={() => setView(id)} aria-label={later ? `${label}, später verfügbar` : label}><Icon /><span>{label}</span>{id === 'nearby' && connected ? <b className="nav-live">1</b> : null}{id === 'chat' && pendingMessages.length ? <b>{pendingMessages.length}</b> : null}</button>)}
         </nav>
         <button className={`profile-button ${view === 'profile' ? 'is-active' : ''}`} type="button" onClick={() => setView('profile')}><span className="avatar">{initials(data.user.name)}</span><span><strong>{data.user.name}</strong><small>{data.user.className || 'Keine Klasse'} · {data.user.school || 'Keine Schule'}</small></span><CircleUserRound /></button>
       </aside>
 
       <section className="content">
-        <header className="topbar"><div><p>TESTVERSION 0.3 · INDEXEDDB · ENDE-ZU-ENDE</p><h1>{view === 'today' ? `Hallo, ${data.user.name}.` : navigation.find((item) => item.id === view)?.label ?? 'Profil'}</h1></div><div className="topbar-actions"><span className={`offline-pill ${online ? 'is-online' : ''}`}>{online ? <Wifi /> : <WifiOff />} {online ? 'Internet verfügbar' : 'Offline bereit'}</span><Button className="primary-button" onClick={() => setView('chat')}><Send /> Schnellnachricht</Button></div></header>
+        <header className="topbar"><div><p>TESTVERSION 0.3.1 · INDEXEDDB · ENDE-ZU-ENDE</p><h1>{view === 'today' ? `Hallo, ${data.user.name}.` : navigation.find((item) => item.id === view)?.label ?? 'Profil'}</h1></div><div className="topbar-actions"><span className={`offline-pill ${online ? 'is-online' : ''}`}>{online ? <Wifi /> : <WifiOff />} {online ? 'Internet verfügbar' : 'Offline bereit'}</span><Button className="primary-button" onClick={() => setView('chat')}><Send /> Schnellnachricht</Button></div></header>
 
         {view === 'today' ? <div className="dashboard-grid">
           <section className="hero-card"><div className="hero-copy"><span className="eyebrow">DEIN TAG</span><h2>Alles im Blick.<br />Auch ohne WLAN.</h2><p>{openTasks.length} offene Aufgaben, {data.contacts.length} Kontakte und {data.relayStore.length} verschlüsselte Pakete im lokalen Speicher.</p></div><div className="signal-orbit" aria-hidden="true"><span className="orbit orbit-one" /><span className="orbit orbit-two" /><span className="orbit orbit-three" /><span className={`signal-core ${connected ? 'is-connected' : ''}`}><Radio /></span><span className="peer peer-one">ID</span><span className="peer peer-two">P2P</span><span className="peer peer-three">E2E</span></div></section>

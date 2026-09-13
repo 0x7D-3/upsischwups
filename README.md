@@ -1,4 +1,4 @@
-# Schultag PWA — Testversion 0.3
+# Schultag PWA — Testversion 0.3.1
 
 „Alles, was du während eines Schultags brauchst – selbst wenn das WLAN nicht funktioniert.“
 
