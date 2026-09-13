@@ -1,0 +1,21 @@
+{
+  "id": "./",
+  "name": "Schultag — auch ohne WLAN",
+  "short_name": "Schultag",
+  "description": "Lokaler Chat, Aufgaben und Notizen für den Schulalltag.",
+  "lang": "de",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f3f6fa",
+  "theme_color": "#122238",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
