@@ -26,6 +26,7 @@ export type ContactCard = {
 
 export type Contact = {
   card: ContactCard;
+  displayName: string;
   verified: boolean;
   addedAt: string;
   lastSeenAt?: string;
@@ -55,8 +56,17 @@ export type SchoolTask = {
 
 export type Note = {
   id: string;
+  subject: string;
+  title: string;
   body: string;
   updatedAt: string;
+};
+
+export type LocalAuth = {
+  version: 1;
+  iterations: number;
+  salt: string;
+  pinHash: string;
 };
 
 export type SealedContent =
@@ -103,13 +113,15 @@ export type StoredReceipt = {
 };
 
 export type AccountData = {
-  schemaVersion: 2;
+  schemaVersion: 3;
   user: UserProfile;
   identity: IdentityKeys;
+  auth?: LocalAuth;
   contacts: Contact[];
   messages: ChatMessage[];
   tasks: SchoolTask[];
   notes: Note[];
+  customSubjects: string[];
   relayStore: RelayRecord[];
   receiptStore: StoredReceipt[];
   seenEnvelopeIds: string[];
@@ -119,6 +131,7 @@ export type AccountData = {
 
 export type AccountSummary = Pick<UserProfile, 'id' | 'name' | 'className' | 'school'> & {
   updatedAt: string;
+  hasPin: boolean;
 };
 
 const DATABASE_NAME = 'schultag-local-v2';
@@ -159,10 +172,35 @@ function openDatabase() {
   });
 }
 
+export function normalizeAccount(account: AccountData) {
+  const legacy = account as AccountData & {
+    schemaVersion: number;
+    contacts?: Array<Contact & { displayName?: string }>;
+    notes?: Array<Note & { subject?: string; title?: string }>;
+    customSubjects?: string[];
+  };
+  const now = new Date().toISOString();
+  return {
+    ...legacy,
+    schemaVersion: 3,
+    contacts: (legacy.contacts ?? []).map((contact) => ({
+      ...contact,
+      displayName: contact.displayName?.trim() || contact.card.name,
+    })),
+    notes: (legacy.notes ?? []).map((note) => ({
+      ...note,
+      subject: note.subject?.trim() || 'Allgemein',
+      title: note.title?.trim() || note.body.trim().split('\n')[0]?.slice(0, 48) || 'Notiz',
+    })),
+    customSubjects: [...new Set(legacy.customSubjects ?? [])],
+    updatedAt: legacy.updatedAt || now,
+  } satisfies AccountData;
+}
+
 export async function saveAccount(account: AccountData) {
   const database = await openDatabase();
   const transaction = database.transaction(['accounts'], 'readwrite');
-  transaction.objectStore('accounts').put({ ...account, updatedAt: new Date().toISOString() });
+  transaction.objectStore('accounts').put({ ...normalizeAccount(account), updatedAt: new Date().toISOString() });
   await transactionDone(transaction);
   database.close();
 }
@@ -173,7 +211,7 @@ export async function loadAccount(accountId: string) {
   const account = await requestResult(transaction.objectStore('accounts').get(accountId));
   await transactionDone(transaction);
   database.close();
-  return account as AccountData | undefined;
+  return account ? normalizeAccount(account as AccountData) : undefined;
 }
 
 export async function setActiveAccountId(accountId: string) {
@@ -182,6 +220,25 @@ export async function setActiveAccountId(accountId: string) {
   transaction.objectStore('meta').put({ key: 'activeAccountId', value: accountId });
   await transactionDone(transaction);
   database.close();
+}
+
+export async function setSessionAccountId(accountId: string | null) {
+  const database = await openDatabase();
+  const transaction = database.transaction(['meta'], 'readwrite');
+  const store = transaction.objectStore('meta');
+  if (accountId) store.put({ key: 'sessionAccountId', value: accountId });
+  else store.delete('sessionAccountId');
+  await transactionDone(transaction);
+  database.close();
+}
+
+export async function loadSessionAccountId() {
+  const database = await openDatabase();
+  const transaction = database.transaction(['meta'], 'readonly');
+  const meta = await requestResult(transaction.objectStore('meta').get('sessionAccountId')) as { value?: string } | undefined;
+  await transactionDone(transaction);
+  database.close();
+  return meta?.value ?? null;
 }
 
 export async function loadActiveAccount() {
@@ -197,7 +254,7 @@ export async function loadActiveAccount() {
   }
   await transactionDone(transaction);
   database.close();
-  return account;
+  return account ? normalizeAccount(account) : undefined;
 }
 
 export async function listAccounts() {
@@ -207,7 +264,7 @@ export async function listAccounts() {
   await transactionDone(transaction);
   database.close();
   return accounts
-    .map((account): AccountSummary => ({ ...account.user, updatedAt: account.updatedAt }))
+    .map((account): AccountSummary => ({ ...account.user, updatedAt: account.updatedAt, hasPin: Boolean(account.auth) }))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
@@ -268,7 +325,7 @@ export async function createAccount(name: string, className = '', school = '') {
   const id = await derivePersonId(identity.encryptionPublicKey, identity.signingPublicKey);
   const now = new Date().toISOString();
   const account: AccountData = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     user: { id, name: name.trim() || 'Mein Profil', className, school },
     identity,
     contacts: [],
@@ -277,7 +334,8 @@ export async function createAccount(name: string, className = '', school = '') {
       { id: createId('task'), title: 'Seite 42, Nr. 3–6', subject: 'Mathematik', due: 'morgen', completed: false },
       { id: createId('task'), title: 'Vocabulary Unit 2', subject: 'Englisch', due: 'Mittwoch', completed: false },
     ],
-    notes: [{ id: createId('note'), body: '', updatedAt: now }],
+    notes: [],
+    customSubjects: [],
     relayStore: [],
     receiptStore: [],
     seenEnvelopeIds: [],
@@ -459,6 +517,40 @@ export function pruneAccount(account: AccountData) {
   };
 }
 
+async function derivePinHash(pin: string, salt: Uint8Array, iterations: number) {
+  const sourceKey = await crypto.subtle.importKey('raw', textEncoder.encode(pin), 'PBKDF2', false, ['deriveBits']);
+  const saltBuffer = salt.buffer.slice(salt.byteOffset, salt.byteOffset + salt.byteLength) as ArrayBuffer;
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', hash: 'SHA-256', salt: saltBuffer, iterations },
+    sourceKey,
+    256,
+  );
+  return new Uint8Array(bits);
+}
+
+export async function createLocalAuth(pin: string) {
+  if (!/^\d{4,8}$/u.test(pin)) throw new Error('Die PIN muss aus 4 bis 8 Ziffern bestehen.');
+  const iterations = 150_000;
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const pinHash = await derivePinHash(pin, salt, iterations);
+  return {
+    version: 1,
+    iterations,
+    salt: bytesToBase64Url(salt),
+    pinHash: bytesToBase64Url(pinHash),
+  } satisfies LocalAuth;
+}
+
+export async function verifyLocalPin(pin: string, auth: LocalAuth) {
+  if (!/^\d{4,8}$/u.test(pin) || auth.version !== 1) return false;
+  const expected = base64UrlToBytes(auth.pinHash);
+  const actual = await derivePinHash(pin, base64UrlToBytes(auth.salt), auth.iterations);
+  if (actual.length !== expected.length) return false;
+  let difference = 0;
+  for (let index = 0; index < actual.length; index += 1) difference |= actual[index] ^ expected[index];
+  return difference === 0;
+}
+
 type EncryptedBackup = {
   format: 'schultag-backup';
   version: 1;
@@ -522,12 +614,12 @@ export async function openEncryptedBackup(value: string, password: string) {
       base64UrlToBytes(backup.ciphertext),
     );
     const account = JSON.parse(textDecoder.decode(plaintext)) as AccountData;
-    if (account.schemaVersion !== 2 || !account.user?.id || !account.identity || !Array.isArray(account.messages) || !Array.isArray(account.tasks)) {
+    if (![2, 3].includes(account.schemaVersion) || !account.user?.id || !account.identity || !Array.isArray(account.messages) || !Array.isArray(account.tasks)) {
       throw new Error('Das entschlüsselte Konto ist unvollständig.');
     }
     const expectedId = await derivePersonId(account.identity.encryptionPublicKey, account.identity.signingPublicKey);
     if (expectedId !== account.user.id) throw new Error('Die Konto-ID passt nicht zu den enthaltenen Schlüsseln.');
-    return pruneAccount(account);
+    return pruneAccount(normalizeAccount(account));
   } catch (error) {
     if (error instanceof Error && error.message.includes('Konto-ID')) throw error;
     throw new Error('Backup-Passwort falsch oder Datei beschädigt.');

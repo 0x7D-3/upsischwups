@@ -41,7 +41,7 @@ const cachedAssets = listFiles(outputDirectory)
   .map((fileName) => `./${fileName}`);
 cachedAssets.unshift('./');
 
-const serviceWorker = `const CACHE_NAME = 'schultag-shell-v4';
+const serviceWorker = `const CACHE_NAME = 'schultag-shell-v5';
 const ROOT = new URL('./', self.registration.scope).href;
 const CORE_ASSETS = ${JSON.stringify(cachedAssets, null, 2)}.map((path) => new URL(path, self.registration.scope).href);
 

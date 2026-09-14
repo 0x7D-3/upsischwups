@@ -18,6 +18,8 @@ import {
   House,
   KeyRound,
   LockKeyhole,
+  LogIn,
+  LogOut,
   MessageCircle,
   NotebookPen,
   PackageCheck,
@@ -29,6 +31,7 @@ import {
   ShieldCheck,
   Smartphone,
   Sparkles,
+  Trash2,
   Upload,
   UserPlus,
   UsersRound,
@@ -54,6 +57,7 @@ import {
   createEncryptedBackup,
   createEnvelope,
   createId,
+  createLocalAuth,
   createReceipt,
   decodeContactCard,
   encodeContactCard,
@@ -62,13 +66,16 @@ import {
   listAccounts,
   loadAccount,
   loadActiveAccount,
+  loadSessionAccountId,
   openEncryptedBackup,
   openEnvelope,
   pruneAccount,
   requestPersistentStorage,
   saveAccount,
   setActiveAccountId,
+  setSessionAccountId,
   storageUsage,
+  verifyLocalPin,
   verifyReceipt,
 } from '@/lib/offline-store';
 
@@ -111,6 +118,31 @@ const mobileNavigation: Array<{ id: View; label: string; icon: typeof House; lat
   { id: 'profile', label: 'Profil', icon: CircleUserRound },
   ...navigation.slice(4),
 ];
+
+const NRW_SUBJECT_GROUPS = [
+  {
+    label: 'Sprachen, Literatur und Kunst',
+    subjects: ['Deutsch', 'Englisch', 'Französisch', 'Spanisch', 'Latein', 'Italienisch', 'Niederländisch', 'Russisch', 'Chinesisch', 'Japanisch', 'Türkisch', 'Neugriechisch', 'Portugiesisch', 'Griechisch', 'Hebräisch', 'Kunst', 'Musik'],
+  },
+  {
+    label: 'Gesellschaftswissenschaften',
+    subjects: ['Geschichte', 'Geographie', 'Sozialwissenschaften', 'Philosophie', 'Erziehungswissenschaft', 'Psychologie', 'Recht'],
+  },
+  {
+    label: 'Mathematik, Naturwissenschaften und Technik',
+    subjects: ['Mathematik', 'Biologie', 'Chemie', 'Physik', 'Informatik', 'Technik', 'Ernährungslehre'],
+  },
+  {
+    label: 'Weitere EF-Fächer',
+    subjects: ['Evangelische Religionslehre', 'Katholische Religionslehre', 'Sport', 'Vertiefungskurs Deutsch', 'Vertiefungskurs Englisch', 'Vertiefungskurs Mathematik'],
+  },
+] as const;
+
+const NRW_SUBJECTS = NRW_SUBJECT_GROUPS.flatMap((group) => [...group.subjects]);
+
+function SubjectOptions({ customSubjects = [], includeGeneral = false }: { customSubjects?: string[]; includeGeneral?: boolean }) {
+  return <>{includeGeneral ? <option value="Allgemein">Allgemein</option> : null}{NRW_SUBJECT_GROUPS.map((group) => <optgroup label={group.label} key={group.label}>{group.subjects.map((subject) => <option value={subject} key={subject}>{subject}</option>)}</optgroup>)}{customSubjects.length ? <optgroup label="Eigene Fächer">{customSubjects.map((subject) => <option value={subject} key={subject}>{subject}</option>)}</optgroup> : null}</>;
+}
 
 const lessons = [
   { time: '08:00', subject: 'Mathematik', room: 'Raum 204 · Frau König', current: true },
@@ -188,11 +220,35 @@ function formatBytes(bytes: number) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+function formatDue(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(value)) return value;
+  return new Intl.DateTimeFormat('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' }).format(new Date(`${value}T12:00:00`));
+}
+
+function subjectColor(subject: string) {
+  let hash = 0;
+  for (const character of subject) hash = ((hash << 5) - hash + character.charCodeAt(0)) | 0;
+  return `hsl(${Math.abs(hash) % 360} 62% 58%)`;
+}
+
+function contactName(contact: AccountData['contacts'][number]) {
+  return contact.displayName.trim() || contact.card.name;
+}
+
 export default function Home() {
   const [view, setView] = useState<View>('today');
   const [data, setData] = useState<AccountData | null>(null);
   const [accounts, setAccounts] = useState<AccountSummary[]>([]);
   const [hydrated, setHydrated] = useState(false);
+  const [authenticated, setAuthenticated] = useState(false);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [loginAccountId, setLoginAccountId] = useState('');
+  const [loginPin, setLoginPin] = useState('');
+  const [setupName, setSetupName] = useState('');
+  const [setupClassName, setSetupClassName] = useState('EF');
+  const [setupSchool, setSetupSchool] = useState('');
+  const [setupPin, setSetupPin] = useState('');
+  const [profilePinDraft, setProfilePinDraft] = useState('');
   const [online, setOnline] = useState(() => typeof navigator === 'undefined' ? true : navigator.onLine);
   const [storagePersistent, setStoragePersistent] = useState(false);
   const [usedStorage, setUsedStorage] = useState<number | null>(null);
@@ -200,9 +256,16 @@ export default function Home() {
   const [messageDraft, setMessageDraft] = useState('');
   const [taskTitle, setTaskTitle] = useState('');
   const [taskSubject, setTaskSubject] = useState('Mathematik');
+  const [taskDue, setTaskDue] = useState('');
   const [noteDraft, setNoteDraft] = useState('');
+  const [noteTitle, setNoteTitle] = useState('');
+  const [noteSubject, setNoteSubject] = useState('Deutsch');
+  const [customSubjectDraft, setCustomSubjectDraft] = useState('');
   const [contactCode, setContactCode] = useState('');
   const [newAccountName, setNewAccountName] = useState('');
+  const [newAccountClass, setNewAccountClass] = useState('EF');
+  const [newAccountSchool, setNewAccountSchool] = useState('');
+  const [newAccountPin, setNewAccountPin] = useState('');
   const [backupPassword, setBackupPassword] = useState('');
   const [cryptoBusy, setCryptoBusy] = useState(false);
   const [pairRole, setPairRole] = useState<PairRole>(null);
@@ -221,6 +284,7 @@ export default function Home() {
   const saveQueueRef = useRef(Promise.resolve());
   const processingEnvelopeIdsRef = useRef(new Set<string>());
   const importInputRef = useRef<HTMLInputElement | null>(null);
+  const noteInputRef = useRef<HTMLTextAreaElement | null>(null);
 
   const openTasks = useMemo(() => data?.tasks.filter((task) => !task.completed) ?? [], [data?.tasks]);
   const pendingMessages = useMemo(
@@ -238,6 +302,15 @@ export default function Home() {
     ));
   }, [data, selectedContact]);
   const ownContactCode = useMemo(() => data ? encodeContactCard(getContactCard(data)) : '', [data]);
+  const selectedSubjectNotes = useMemo(
+    () => data?.notes.filter((note) => note.subject === noteSubject).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)) ?? [],
+    [data?.notes, noteSubject],
+  );
+  const availableCustomSubjects = useMemo(() => [...new Set([
+    ...(data?.customSubjects ?? []),
+    ...(data?.tasks.map((task) => task.subject) ?? []),
+    ...(data?.notes.map((note) => note.subject) ?? []),
+  ].filter((subject) => subject !== 'Allgemein' && !NRW_SUBJECTS.includes(subject as typeof NRW_SUBJECTS[number])))], [data?.customSubjects, data?.notes, data?.tasks]);
   const connected = connectionState === 'connected';
 
   function notify(message: string) {
@@ -263,7 +336,8 @@ export default function Home() {
     let cancelled = false;
     async function initialize() {
       try {
-        let account = await loadActiveAccount();
+        const sessionAccountId = await loadSessionAccountId();
+        let account = sessionAccountId ? await loadAccount(sessionAccountId) : await loadActiveAccount();
         if (!account) {
           let legacy: LegacyData | null = null;
           try {
@@ -280,7 +354,7 @@ export default function Home() {
           if (legacy) {
             const legacyPeer = await createAccount('Lena König', legacy.user?.className ?? '', legacy.user?.school ?? '');
             const peerCard = getContactCard(legacyPeer);
-            account.contacts = [{ card: peerCard, verified: false, addedAt: new Date().toISOString() }];
+            account.contacts = [{ card: peerCard, displayName: peerCard.name, verified: false, addedAt: new Date().toISOString() }];
             account.messages = (legacy.messages ?? []).map((message) => ({
               id: message.id,
               body: message.body,
@@ -293,7 +367,7 @@ export default function Home() {
               relayCount: message.status === 'pending' ? 0 : 1,
             }));
             account.tasks = legacy.tasks?.length ? legacy.tasks : account.tasks;
-            account.notes = legacy.notes?.length ? legacy.notes : account.notes;
+            account.notes = legacy.notes?.map((note) => ({ ...note, subject: 'Allgemein', title: note.body.trim().split('\n')[0]?.slice(0, 48) || 'Notiz' })) ?? account.notes;
             window.localStorage.removeItem(LEGACY_STORAGE_KEY);
           }
           await saveAccount(account);
@@ -303,7 +377,12 @@ export default function Home() {
         const clean = pruneAccount(account);
         dataRef.current = clean;
         setData(clean);
-        setNoteDraft(clean.notes[0]?.body ?? '');
+        setSetupName(clean.user.name === 'Mein Profil' ? '' : clean.user.name);
+        setSetupClassName(clean.user.className || 'EF');
+        setSetupSchool(clean.user.school);
+        setLoginAccountId(clean.user.id);
+        setAuthenticated(Boolean(clean.auth && sessionAccountId === clean.user.id));
+        setNoteSubject(clean.notes[0]?.subject ?? 'Deutsch');
         setSelectedContactId(clean.contacts[0]?.card.id ?? '');
         await refreshAccounts();
         setStoragePersistent(await hasPersistentStorage());
@@ -338,6 +417,7 @@ export default function Home() {
   }, [data, hydrated]);
 
   useEffect(() => {
+    if (!authenticated) return;
     const context = (document as Document & {
       modelContext?: { registerTool: (tool: unknown, options?: { signal?: AbortSignal }) => void | Promise<void> };
     }).modelContext;
@@ -370,7 +450,7 @@ export default function Home() {
       },
     }, { signal: lifecycle.signal })).catch(() => undefined);
     return () => lifecycle.abort();
-  }, []);
+  }, [authenticated]);
 
   useEffect(() => () => {
     dataChannelRef.current?.close();
@@ -390,6 +470,7 @@ export default function Home() {
       const existing = current.contacts.find((contact) => contact.card.id === card.id);
       const nextContact = {
         card,
+        displayName: existing?.displayName || card.name,
         verified: existing?.verified || verified,
         addedAt: existing?.addedAt ?? new Date().toISOString(),
         lastSeenAt: new Date().toISOString(),
@@ -447,7 +528,7 @@ export default function Home() {
       const receipt = await createReceipt(current, relay.envelope);
       mutateAccount((account) => {
         const contactExists = account.contacts.some((contact) => contact.card.id === content.sender.id);
-        const contacts = contactExists ? account.contacts : [{ card: content.sender, verified: false, addedAt: new Date().toISOString(), lastSeenAt: new Date().toISOString() }, ...account.contacts];
+        const contacts = contactExists ? account.contacts : [{ card: content.sender, displayName: content.sender.name, verified: false, addedAt: new Date().toISOString(), lastSeenAt: new Date().toISOString() }, ...account.contacts];
         const messages = content.kind === 'message' && !account.messages.some((message) => message.id === relay.envelope.id)
           ? [...account.messages, { id: relay.envelope.id, body: content.body, createdAt: relay.envelope.createdAt, senderId: content.sender.id, recipientId: account.user.id, senderName: content.sender.name, direction: 'incoming' as const, status: 'delivered' as const, relayCount: relay.hops }]
           : account.messages;
@@ -622,9 +703,9 @@ export default function Home() {
   function submitTask(event: SyntheticEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!taskTitle.trim()) return;
-    const task: SchoolTask = { id: createId('task'), title: taskTitle.trim(), subject: taskSubject, due: 'offen', completed: false };
+    const task: SchoolTask = { id: createId('task'), title: taskTitle.trim(), subject: taskSubject, due: taskDue || 'offen', completed: false };
     mutateAccount((current) => ({ ...current, tasks: [task, ...current.tasks] }));
-    setTaskTitle(''); notify('Aufgabe dauerhaft offline gespeichert.');
+    setTaskTitle(''); setTaskDue(''); notify('Aufgabe dauerhaft offline gespeichert.');
   }
 
   function toggleTask(taskId: string) {
@@ -640,16 +721,52 @@ export default function Home() {
       const peerId = connectedPeerRef.current?.id;
       const sentNow = peerId ? sendPacket({ kind: 'envelope', relay: { envelope, hops: 1, copiesLeft: 4 } }) : false;
       mutateAccount((account) => ({ ...account, relayStore: [...account.relayStore, { envelope, hops: 0, copiesLeft: sentNow ? 7 : 8, forwardedTo: sentNow && peerId ? [peerId] : [] }] }));
-      notify(`Aufgabe für ${selectedContact.card.name} verschlüsselt eingereiht.`);
+      notify(`Aufgabe für ${contactName(selectedContact)} verschlüsselt eingereiht.`);
     } catch { notify('Die Aufgabe konnte nicht verschlüsselt werden.'); }
     finally { setCryptoBusy(false); }
   }
 
   function saveNote() {
-    if (!data) return;
-    const note = { id: data.notes[0]?.id ?? createId('note'), body: noteDraft, updatedAt: new Date().toISOString() };
-    mutateAccount((current) => ({ ...current, notes: [note, ...current.notes.slice(1)] }));
-    notify('Notiz dauerhaft offline gespeichert.');
+    const body = noteDraft.trim();
+    if (!body) { notify('Schreibe zuerst eine Notiz.'); return; }
+    const note = {
+      id: createId('note'),
+      subject: noteSubject,
+      title: noteTitle.trim() || body.split('\n')[0].slice(0, 48),
+      body,
+      updatedAt: new Date().toISOString(),
+    };
+    mutateAccount((current) => ({ ...current, notes: [note, ...current.notes] }));
+    setNoteTitle(''); setNoteDraft('');
+    notify(`Notiz für ${noteSubject} gespeichert.`);
+  }
+
+  function openNoteForSubject(subject: string) {
+    setNoteSubject(subject);
+    window.setTimeout(() => noteInputRef.current?.focus(), 0);
+  }
+
+  function deleteNote(noteId: string) {
+    mutateAccount((current) => ({ ...current, notes: current.notes.filter((note) => note.id !== noteId) }));
+    notify('Notiz gelöscht.');
+  }
+
+  function addCustomSubject() {
+    const subject = customSubjectDraft.trim();
+    if (!subject) return;
+    const known = [...NRW_SUBJECTS, ...availableCustomSubjects].some((item) => item.toLocaleLowerCase('de-DE') === subject.toLocaleLowerCase('de-DE'));
+    if (known) { notify('Dieses Fach ist bereits vorhanden.'); return; }
+    mutateAccount((current) => ({ ...current, customSubjects: [...current.customSubjects, subject] }));
+    setTaskSubject(subject); setNoteSubject(subject); setCustomSubjectDraft('');
+    notify(`${subject} wurde als eigenes Fach angelegt.`);
+  }
+
+  function renameContact(contactId: string, displayName: string) {
+    mutateAccount((current) => ({ ...current, contacts: current.contacts.map((contact) => contact.card.id === contactId ? { ...contact, displayName } : contact) }));
+  }
+
+  function normalizeContactName(contactId: string) {
+    mutateAccount((current) => ({ ...current, contacts: current.contacts.map((contact) => contact.card.id === contactId && !contact.displayName.trim() ? { ...contact, displayName: contact.card.name } : contact) }));
   }
 
   async function addContact() {
@@ -665,29 +782,75 @@ export default function Home() {
     finally { setCryptoBusy(false); }
   }
 
-  async function createLocalAccount() {
-    if (!newAccountName.trim()) { notify('Bitte gib einen Namen für das Konto ein.'); return; }
-    setCryptoBusy(true);
+  async function completeProfileSetup(event: SyntheticEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const current = dataRef.current;
+    if (!current || !setupName.trim()) { notify('Bitte gib deinen vollständigen Namen ein.'); return; }
+    setAuthBusy(true);
     try {
-      const account = await createAccount(newAccountName.trim());
-      await saveAccount(account); await setActiveAccountId(account.user.id); resetPairing();
-      dataRef.current = account; setData(account); setNoteDraft(account.notes[0]?.body ?? ''); setSelectedContactId(''); setNewAccountName('');
-      await refreshAccounts(); notify('Neues lokales Konto mit eigener ID erstellt.');
-    } finally { setCryptoBusy(false); }
+      const auth = await createLocalAuth(setupPin);
+      const account: AccountData = { ...current, user: { ...current.user, name: setupName.trim(), className: setupClassName.trim() || 'EF', school: setupSchool.trim() }, auth, updatedAt: new Date().toISOString() };
+      await saveAccount(account); await setActiveAccountId(account.user.id); await setSessionAccountId(account.user.id);
+      dataRef.current = account; setData(account); setAuthenticated(true); setSetupPin(''); await refreshAccounts();
+      notify('Profil eingerichtet und lokal angemeldet.');
+    } catch (error) { notify(error instanceof Error ? error.message : 'Profil konnte nicht eingerichtet werden.'); }
+    finally { setAuthBusy(false); }
   }
 
-  async function switchAccount(accountId: string) {
-    const current = dataRef.current;
-    if (current?.user.id === accountId) return;
-    setCryptoBusy(true);
+  async function createLocalAccount(event: SyntheticEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!newAccountName.trim()) { notify('Bitte gib deinen vollständigen Namen ein.'); return; }
+    setAuthBusy(true);
     try {
-      if (current) await saveAccount(current);
-      const account = await loadAccount(accountId);
+      const account = await createAccount(newAccountName.trim(), newAccountClass.trim() || 'EF', newAccountSchool.trim());
+      account.auth = await createLocalAuth(newAccountPin);
+      await saveAccount(account); await setActiveAccountId(account.user.id); await setSessionAccountId(account.user.id); resetPairing();
+      dataRef.current = account; setData(account); setAuthenticated(true); setSelectedContactId(''); setNoteSubject('Deutsch');
+      setNewAccountName(''); setNewAccountClass('EF'); setNewAccountSchool(''); setNewAccountPin(''); await refreshAccounts();
+      notify('Neues lokales Konto erstellt.');
+    } catch (error) { notify(error instanceof Error ? error.message : 'Konto konnte nicht erstellt werden.'); }
+    finally { setAuthBusy(false); }
+  }
+
+  async function login(event: SyntheticEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setAuthBusy(true);
+    try {
+      const account = await loadAccount(loginAccountId);
       if (!account) throw new Error('Konto wurde nicht gefunden.');
-      await setActiveAccountId(accountId); resetPairing(); dataRef.current = account; setData(pruneAccount(account));
-      setNoteDraft(account.notes[0]?.body ?? ''); setSelectedContactId(account.contacts[0]?.card.id ?? ''); notify(`Konto ${account.user.name} ist jetzt aktiv.`);
-    } catch (error) { notify(error instanceof Error ? error.message : 'Konto konnte nicht gewechselt werden.'); }
-    finally { setCryptoBusy(false); }
+      if (!account.auth) {
+        dataRef.current = account; setData(account); setSetupName(account.user.name === 'Mein Profil' ? '' : account.user.name); setSetupClassName(account.user.className || 'EF'); setSetupSchool(account.user.school); setLoginPin('');
+        notify('Richte für dieses bestehende Konto einmalig eine PIN ein.');
+        return;
+      }
+      if (!await verifyLocalPin(loginPin, account.auth)) throw new Error('Die PIN ist falsch.');
+      await setActiveAccountId(account.user.id); await setSessionAccountId(account.user.id); resetPairing();
+      dataRef.current = account; setData(pruneAccount(account)); setAuthenticated(true); setLoginPin(''); setView('today');
+      setSelectedContactId(account.contacts[0]?.card.id ?? ''); setNoteSubject(account.notes[0]?.subject ?? 'Deutsch');
+    } catch (error) { notify(error instanceof Error ? error.message : 'Anmeldung fehlgeschlagen.'); }
+    finally { setAuthBusy(false); }
+  }
+
+  async function logout() {
+    setAuthBusy(true);
+    try {
+      if (dataRef.current) await saveAccount(dataRef.current);
+      await setSessionAccountId(null); await refreshAccounts(); resetPairing(); setAuthenticated(false); setView('today'); setLoginPin('');
+      if (dataRef.current) setLoginAccountId(dataRef.current.user.id);
+    } finally { setAuthBusy(false); }
+  }
+
+  async function changePin() {
+    const current = dataRef.current;
+    if (!current) return;
+    setAuthBusy(true);
+    try {
+      const auth = await createLocalAuth(profilePinDraft);
+      const account = { ...current, auth, updatedAt: new Date().toISOString() };
+      await saveAccount(account); dataRef.current = account; setData(account); setProfilePinDraft('');
+      notify('Die lokale Anmelde-PIN wurde geändert.');
+    } catch (error) { notify(error instanceof Error ? error.message : 'PIN konnte nicht geändert werden.'); }
+    finally { setAuthBusy(false); }
   }
 
   async function exportBackup() {
@@ -713,7 +876,9 @@ export default function Home() {
     try {
       const account = await openEncryptedBackup(await file.text(), backupPassword);
       await saveAccount(account); await setActiveAccountId(account.user.id); resetPairing(); dataRef.current = account; setData(account);
-      setNoteDraft(account.notes[0]?.body ?? ''); setSelectedContactId(account.contacts[0]?.card.id ?? ''); await refreshAccounts();
+      setNoteSubject(account.notes[0]?.subject ?? 'Deutsch'); setSelectedContactId(account.contacts[0]?.card.id ?? ''); await refreshAccounts();
+      if (account.auth) { await setSessionAccountId(account.user.id); setAuthenticated(true); }
+      else { await setSessionAccountId(null); setAuthenticated(false); setSetupName(account.user.name); setSetupClassName(account.user.className || 'EF'); setSetupSchool(account.user.school); }
       notify(`Backup von ${account.user.name} wiederhergestellt.`);
     } catch (error) { notify(error instanceof Error ? error.message : 'Backup konnte nicht geöffnet werden.'); }
     finally { setCryptoBusy(false); }
@@ -727,7 +892,7 @@ export default function Home() {
 
   function resetCurrentData() {
     if (!window.confirm('Nachrichten, Aufgaben, Notizen und Relaispakete dieses Kontos löschen? ID und Kontakte bleiben erhalten.')) return;
-    mutateAccount((current) => ({ ...current, messages: [], tasks: [], notes: [{ id: createId('note'), body: '', updatedAt: new Date().toISOString() }], relayStore: [], receiptStore: [], seenEnvelopeIds: [], seenReceiptIds: [] }));
+    mutateAccount((current) => ({ ...current, messages: [], tasks: [], notes: [], relayStore: [], receiptStore: [], seenEnvelopeIds: [], seenReceiptIds: [] }));
     setNoteDraft(''); notify('Lokale Inhalte gelöscht; ID und Kontakte wurden behalten.');
   }
 
@@ -738,6 +903,35 @@ export default function Home() {
 
   if (!hydrated || !data) {
     return <main className="loading-screen"><span className="brand-mark"><span>S</span><i /></span><div><strong>Schultag wird lokal geöffnet</strong><small>Konten und Offline-Daten werden aus dem Gerätespeicher geladen.</small></div></main>;
+  }
+
+  if (!authenticated) {
+    const needsSetup = !data.auth;
+    return <main className="auth-shell">
+      <section className="auth-card panel">
+        <div className="auth-brand"><span className="brand-mark"><span>S</span><i /></span><span><strong>SCHULTAG</strong><small>LOKAL · SICHER · OFFLINE</small></span></div>
+        {needsSetup ? <>
+          <div className="auth-heading"><span className="eyebrow">EINMALIGE EINRICHTUNG</span><h1>Dein persönliches Konto</h1><p>Name und PIN bleiben auf diesem Gerät. Danach öffnest du Schultag über deine lokale Anmeldung.</p></div>
+          <form className="auth-form" onSubmit={(event) => void completeProfileSetup(event)}>
+            <label htmlFor="setup-name">Vollständiger Name<Input id="setup-name" value={setupName} onChange={(event) => setSetupName(event.target.value)} placeholder="Vorname Nachname" autoComplete="name" /></label>
+            <div className="auth-field-row"><label htmlFor="setup-class">Stufe<Input id="setup-class" value={setupClassName} onChange={(event) => setSetupClassName(event.target.value)} placeholder="EF" /></label><label htmlFor="setup-school">Schule<Input id="setup-school" value={setupSchool} onChange={(event) => setSetupSchool(event.target.value)} placeholder="Optional" /></label></div>
+            <label htmlFor="setup-pin">Neue PIN<Input id="setup-pin" type="password" inputMode="numeric" pattern="[0-9]*" minLength={4} maxLength={8} value={setupPin} onChange={(event) => setSetupPin(event.target.value.replace(/\D/gu, '').slice(0, 8))} placeholder="4 bis 8 Ziffern" autoComplete="new-password" /></label>
+            <Button size="lg" type="submit" disabled={authBusy}><ShieldCheck /> Konto einrichten</Button>
+          </form>
+        </> : <>
+          <div className="auth-heading"><span className="eyebrow">LOKALE ANMELDUNG</span><h1>Willkommen zurück</h1><p>Wähle dein Konto und entsperre deine lokal gespeicherten Kontakte, Aufgaben und Notizen.</p></div>
+          <form className="auth-form" onSubmit={(event) => void login(event)}>
+            <label htmlFor="login-account">Konto<select id="login-account" value={loginAccountId} onChange={(event) => setLoginAccountId(event.target.value)}>{accounts.map((account) => <option value={account.id} key={account.id}>{account.name} · {account.className || 'ohne Stufe'}{account.hasPin ? '' : ' · Einrichtung nötig'}</option>)}</select></label>
+            <label htmlFor="login-pin">PIN<Input id="login-pin" type="password" inputMode="numeric" pattern="[0-9]*" minLength={4} maxLength={8} value={loginPin} onChange={(event) => setLoginPin(event.target.value.replace(/\D/gu, '').slice(0, 8))} placeholder="Deine PIN" autoComplete="current-password" /></label>
+            <Button size="lg" type="submit" disabled={authBusy || !loginAccountId}><LogIn /> Anmelden</Button>
+          </form>
+          <details className="new-account-disclosure"><summary><Plus /> Weiteres Konto anlegen</summary><form className="auth-form compact-auth-form" onSubmit={(event) => void createLocalAccount(event)}><label htmlFor="new-account-name">Vollständiger Name<Input id="new-account-name" value={newAccountName} onChange={(event) => setNewAccountName(event.target.value)} placeholder="Vorname Nachname" /></label><div className="auth-field-row"><label htmlFor="new-account-class">Stufe<Input id="new-account-class" value={newAccountClass} onChange={(event) => setNewAccountClass(event.target.value)} placeholder="EF" /></label><label htmlFor="new-account-school">Schule<Input id="new-account-school" value={newAccountSchool} onChange={(event) => setNewAccountSchool(event.target.value)} placeholder="Optional" /></label></div><label htmlFor="new-account-pin">Neue PIN<Input id="new-account-pin" type="password" inputMode="numeric" pattern="[0-9]*" minLength={4} maxLength={8} value={newAccountPin} onChange={(event) => setNewAccountPin(event.target.value.replace(/\D/gu, '').slice(0, 8))} placeholder="4 bis 8 Ziffern" autoComplete="new-password" /></label><Button type="submit" disabled={authBusy}><Plus /> Konto erstellen</Button></form></details>
+        </>}
+        <div className="auth-privacy"><LockKeyhole /><span><strong>Kein Serverkonto.</strong> Deine PIN wird als sicherer Prüfwert gespeichert und verlässt das Gerät nicht.</span></div>
+      </section>
+      <aside className="auth-benefits"><span className="eyebrow">DEIN SCHULTAG</span><h2>Einmal einrichten.<br />Jeden Tag offline nutzen.</h2><ul><li><CheckCircle2 /> Kontakte dauerhaft behalten</li><li><CheckCircle2 /> Hausaufgaben nach Fach und Datum</li><li><CheckCircle2 /> Eigene Fachnotizen</li></ul></aside>
+      {toast ? <output className="toast" aria-live="polite"><CheckCircle2 />{toast}</output> : null}
+    </main>;
   }
 
   return (
@@ -754,19 +948,19 @@ export default function Home() {
       </aside>
 
       <section className="content">
-        <header className="topbar"><div><p>TESTVERSION 0.3.1 · INDEXEDDB · ENDE-ZU-ENDE</p><h1>{view === 'today' ? `Hallo, ${data.user.name}.` : navigation.find((item) => item.id === view)?.label ?? 'Profil'}</h1></div><div className="topbar-actions"><span className={`offline-pill ${online ? 'is-online' : ''}`}>{online ? <Wifi /> : <WifiOff />} {online ? 'Internet verfügbar' : 'Offline bereit'}</span><Button className="primary-button" onClick={() => setView('chat')}><Send /> Schnellnachricht</Button></div></header>
+        <header className="topbar"><div><p>TESTVERSION 0.4 · LOKALES KONTO · ENDE-ZU-ENDE</p><h1>{view === 'today' ? `Hallo, ${data.user.name}.` : navigation.find((item) => item.id === view)?.label ?? 'Profil'}</h1></div><div className="topbar-actions"><span className={`offline-pill ${online ? 'is-online' : ''}`}>{online ? <Wifi /> : <WifiOff />} {online ? 'Internet verfügbar' : 'Offline bereit'}</span><Button className="primary-button" onClick={() => setView('chat')}><Send /> Schnellnachricht</Button></div></header>
 
         {view === 'today' ? <div className="dashboard-grid">
           <section className="hero-card"><div className="hero-copy"><span className="eyebrow">DEIN TAG</span><h2>Alles im Blick.<br />Auch ohne WLAN.</h2><p>{openTasks.length} offene Aufgaben, {data.contacts.length} Kontakte und {data.relayStore.length} verschlüsselte Pakete im lokalen Speicher.</p></div><div className="signal-orbit" aria-hidden="true"><span className="orbit orbit-one" /><span className="orbit orbit-two" /><span className="orbit orbit-three" /><span className={`signal-core ${connected ? 'is-connected' : ''}`}><Radio /></span><span className="peer peer-one">ID</span><span className="peer peer-two">P2P</span><span className="peer peer-three">E2E</span></div></section>
           <section className="panel timetable-panel"><div className="panel-heading"><div><span className="eyebrow">NÄCHSTER SCHULTAG</span><h2>Stundenplan</h2></div><button className="icon-button" type="button" aria-label="Stundenplan öffnen"><CalendarDays /></button></div><div className="lessons">{lessons.map((lesson) => <article className={`lesson ${lesson.current ? 'current' : ''}`} key={lesson.time}><time>{lesson.time}</time><span className="lesson-line" /><div><strong>{lesson.subject}</strong><small>{lesson.room}</small></div>{lesson.current ? <span className="lesson-state">Als Nächstes</span> : null}</article>)}</div></section>
           <section className="panel nearby-panel"><div className="panel-heading"><div><span className="eyebrow">STORE & FORWARD</span><h2>Nearby</h2></div><span className={`live-dot ${connected ? '' : 'is-idle'}`}>{connected ? 'LIVE' : 'BEREIT'}</span></div><div className="nearby-count"><strong>{connected ? '1' : '0'}</strong><span>Gerät<br />direkt verbunden</span></div><p className="nearby-caption">Pakete werden beim Verbinden automatisch verschlüsselt abgeglichen.</p><button className="panel-link" type="button" onClick={() => setView('nearby')}>Verbindung öffnen <ChevronRight /></button></section>
-          <section className="panel tasks-panel"><div className="panel-heading"><div><span className="eyebrow">NOCH OFFEN</span><h2>Aufgaben</h2></div><span className="count-chip">{openTasks.length}</span></div>{openTasks.slice(0, 3).map((task) => <div className="task-row" key={task.id}><button type="button" aria-label={`${task.title} erledigen`} onClick={() => toggleTask(task.id)}><CheckCircle2 /></button><span className={`subject-dot ${task.subject.toLowerCase().slice(0, 4)}`} /><div><strong>{task.title}</strong><small>{task.subject} · {task.due}</small></div><ChevronRight /></div>)}{!openTasks.length ? <div className="empty-compact"><CheckCircle2 /> Alles erledigt.</div> : null}</section>
+          <section className="panel tasks-panel"><div className="panel-heading"><div><span className="eyebrow">NOCH OFFEN</span><h2>Aufgaben</h2></div><span className="count-chip">{openTasks.length}</span></div>{openTasks.slice(0, 3).map((task) => <div className="task-row" key={task.id}><button type="button" aria-label={`${task.title} erledigen`} onClick={() => toggleTask(task.id)}><CheckCircle2 /></button><span className="subject-dot" style={{ background: subjectColor(task.subject) }} /><div><strong>{task.title}</strong><small>{task.subject} · {formatDue(task.due)}</small></div><ChevronRight /></div>)}{!openTasks.length ? <div className="empty-compact"><CheckCircle2 /> Alles erledigt.</div> : null}</section>
           <section className="panel sync-panel"><div className="sync-icon"><Database /></div><div><span className="eyebrow">DAUERHAFT LOKAL</span><h2>{pendingMessages.length} warten · {data.relayStore.length} Pakete</h2><p>Jedes Konto hat einen getrennten IndexedDB-Speicher. Beim Schließen bleiben alle Inhalte erhalten.</p></div><button className="icon-button" type="button" aria-label="Speicher öffnen" onClick={() => setView('profile')}><ChevronRight /></button></section>
         </div> : null}
 
         {view === 'chat' ? <div className="chat-layout">
-          <aside className="chat-list panel"><div className="section-intro"><span className="eyebrow">KONTAKTE</span><h2>Unterhaltungen</h2></div>{data.contacts.map((contact) => { const latest = data.messages.filter((message) => message.senderId === contact.card.id || message.recipientId === contact.card.id).at(-1); return <button className={`conversation ${selectedContact?.card.id === contact.card.id ? 'is-active' : ''}`} type="button" key={contact.card.id} onClick={() => setSelectedContactId(contact.card.id)}><span className="avatar lena">{initials(contact.card.name)}</span><span><strong>{contact.card.name}</strong><small>{latest?.body ?? contact.card.id}</small></span>{contact.verified ? <ShieldCheck className="contact-check" /> : <em>NEU</em>}</button>; })}{!data.contacts.length ? <button className="empty-contact" type="button" onClick={() => setView('profile')}><UserPlus /> Ersten Kontakt hinzufügen</button> : null}<div className="privacy-note"><LockKeyhole /><span><strong>Ende-zu-Ende.</strong> Relaisgeräte können Nachrichten nicht lesen.</span></div></aside>
-          <section className="chat-panel panel"><header className="chat-header"><div className="chat-person"><span className="avatar lena">{initials(selectedContact?.card.name ?? '?')}</span><span><strong>{selectedContact?.card.name ?? 'Kontakt auswählen'}</strong><small>{selectedContact ? selectedContact.card.id : 'Im Profil Kontaktcode einfügen'}</small></span></div><span className={`connection-chip ${connected ? 'is-connected' : ''}`}><i /> {connectionLabel}</span></header><div className="messages" aria-live="polite"><div className="day-divider"><span>LOKALER VERLAUF</span></div>{conversationMessages.map((message) => <article className={`message ${message.direction}`} key={message.id} title={`ID: ${message.id}`}><p>{message.body}</p><footer><time>{messageTime(message.createdAt)}</time>{message.direction === 'outgoing' ? <span className={`message-status ${message.status}`} title={`${statusLabel(message.status)} · ${message.relayCount} Weitergaben`}><StatusIcon status={message.status} /></span> : null}</footer></article>)}{!conversationMessages.length ? <div className="empty-messages"><MessageCircle /><strong>Noch keine Nachrichten</strong><span>Nachrichten werden verschlüsselt gespeichert und bei einer Verbindung automatisch weitergegeben.</span></div> : null}</div><form className="message-composer" onSubmit={(event) => void submitMessage(event)}><Input value={messageDraft} onChange={(event) => setMessageDraft(event.target.value)} placeholder={selectedContact ? `Nachricht an ${selectedContact.card.name} …` : 'Zuerst Kontakt hinzufügen …'} aria-label="Nachricht" autoComplete="off" disabled={!selectedContact || cryptoBusy} /><Button type="submit" size="icon-lg" aria-label="Nachricht senden" disabled={!selectedContact || cryptoBusy}><Send /></Button></form><div className="queue-hint"><PackageCheck /> Ausstehend → unterwegs → durch signierte Bestätigung angekommen.</div></section>
+          <aside className="chat-list panel"><div className="section-intro"><span className="eyebrow">KONTAKTE</span><h2>Unterhaltungen</h2></div>{data.contacts.map((contact) => { const latest = data.messages.filter((message) => message.senderId === contact.card.id || message.recipientId === contact.card.id).at(-1); const name = contactName(contact); return <button className={`conversation ${selectedContact?.card.id === contact.card.id ? 'is-active' : ''}`} type="button" key={contact.card.id} onClick={() => setSelectedContactId(contact.card.id)}><span className="avatar lena">{initials(name)}</span><span><strong>{name}</strong><small>{latest?.body ?? contact.card.id}</small></span>{contact.verified ? <ShieldCheck className="contact-check" /> : <em>NEU</em>}</button>; })}{!data.contacts.length ? <button className="empty-contact" type="button" onClick={() => setView('profile')}><UserPlus /> Ersten Kontakt hinzufügen</button> : null}<div className="privacy-note"><LockKeyhole /><span><strong>Ende-zu-Ende.</strong> Relaisgeräte können Nachrichten nicht lesen.</span></div></aside>
+          <section className="chat-panel panel"><header className="chat-header"><div className="chat-person"><span className="avatar lena">{initials(selectedContact ? contactName(selectedContact) : '?')}</span><span><strong>{selectedContact ? contactName(selectedContact) : 'Kontakt auswählen'}</strong><small>{selectedContact ? selectedContact.card.id : 'Im Profil Kontaktcode einfügen'}</small></span></div><span className={`connection-chip ${connected ? 'is-connected' : ''}`}><i /> {connectionLabel}</span></header><div className="messages" aria-live="polite"><div className="day-divider"><span>LOKALER VERLAUF</span></div>{conversationMessages.map((message) => <article className={`message ${message.direction}`} key={message.id} title={`ID: ${message.id}`}><p>{message.body}</p><footer><time>{messageTime(message.createdAt)}</time>{message.direction === 'outgoing' ? <span className={`message-status ${message.status}`} title={`${statusLabel(message.status)} · ${message.relayCount} Weitergaben`}><StatusIcon status={message.status} /></span> : null}</footer></article>)}{!conversationMessages.length ? <div className="empty-messages"><MessageCircle /><strong>Noch keine Nachrichten</strong><span>Nachrichten werden verschlüsselt gespeichert und bei einer Verbindung automatisch weitergegeben.</span></div> : null}</div><form className="message-composer" onSubmit={(event) => void submitMessage(event)}><Input value={messageDraft} onChange={(event) => setMessageDraft(event.target.value)} placeholder={selectedContact ? `Nachricht an ${contactName(selectedContact)} …` : 'Zuerst Kontakt hinzufügen …'} aria-label="Nachricht" autoComplete="off" disabled={!selectedContact || cryptoBusy} /><Button type="submit" size="icon-lg" aria-label="Nachricht senden" disabled={!selectedContact || cryptoBusy}><Send /></Button></form><div className="queue-hint"><PackageCheck /> Ausstehend → unterwegs → durch signierte Bestätigung angekommen.</div></section>
         </div> : null}
 
         {view === 'nearby' ? <div className="nearby-view">
@@ -779,15 +973,41 @@ export default function Home() {
           </section><aside className="nearby-info-stack"><section className="panel honesty-card"><WifiOff /><div><span className="eyebrow">PWA-GRENZE</span><h3>Keine automatische Gerätesuche</h3><p>Safari erlaubt kein Nearby im Hintergrund. Jede Begegnung beginnt deshalb mit dem Verbindungscode.</p></div></section><section className="panel security-card"><ShieldCheck /><div><span className="eyebrow">E2E AKTIV</span><h3>Nur die Ziel-ID kann lesen</h3><p>AES-GCM schützt den Inhalt; die Absender-ID wird mit ECDSA signiert.</p></div></section><section className="panel queue-card"><PackageCheck /><div><span className="eyebrow">STORE & FORWARD</span><h3>{data.relayStore.length} Pakete gespeichert</h3><p>Maximal 8 Sprünge, 8 Kopien und 72 Stunden Gültigkeit begrenzen die Weitergabe.</p></div></section></aside></div>
         </div> : null}
 
-        {view === 'tasks' ? <div className="tasks-layout"><section className="panel task-manager"><div className="panel-heading"><div><span className="eyebrow">DAUERHAFTER AUFGABENPLANER</span><h2>Meine Aufgaben</h2></div><span className="count-chip">{openTasks.length}</span></div><form className="task-form" onSubmit={submitTask}><Input value={taskTitle} onChange={(event) => setTaskTitle(event.target.value)} placeholder="Neue Aufgabe …" aria-label="Aufgabentitel" /><select value={taskSubject} onChange={(event) => setTaskSubject(event.target.value)} aria-label="Fach"><option>Mathematik</option><option>Deutsch</option><option>Englisch</option><option>Biologie</option><option>Geschichte</option><option>Sonstiges</option></select><Button type="submit"><Plus /> Hinzufügen</Button></form><div className="task-list-full">{data.tasks.map((task) => <article className={`task-item-full ${task.completed ? 'is-complete' : ''}`} key={task.id}><button type="button" onClick={() => toggleTask(task.id)} aria-label={`${task.title} ${task.completed ? 'wieder öffnen' : 'erledigen'}`}><CheckCircle2 /></button><span className={`subject-dot ${task.subject.toLowerCase().slice(0, 4)}`} /><div><strong>{task.title}</strong><small>{task.subject} · {task.due}{task.shared ? ' · empfangen' : ''}</small></div><Button variant="ghost" size="icon" onClick={() => void shareTask(task)} aria-label={`${task.title} verschlüsselt teilen`} disabled={!selectedContact || cryptoBusy}><Share2 /></Button></article>)}</div></section><aside className="panel notes-panel"><div className="panel-heading"><div><span className="eyebrow">PERSÖNLICHER NOTIZBLOCK</span><h2>Für mich</h2></div><NotebookPen /></div><Textarea value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} placeholder="Notiz für den Schultag …" /><Button onClick={saveNote}>Dauerhaft speichern</Button><p><Database /> Im aktiven Konto in IndexedDB gespeichert.</p></aside></div> : null}
+        {view === 'tasks' ? <div className="tasks-layout">
+          <section className="panel task-manager">
+            <div className="panel-heading"><div><span className="eyebrow">HAUSAUFGABEN · NRW OBERSTUFE</span><h2>Meine Aufgaben</h2></div><span className="count-chip">{openTasks.length}</span></div>
+            <form className="task-form" onSubmit={submitTask}>
+              <Input value={taskTitle} onChange={(event) => setTaskTitle(event.target.value)} placeholder="Was ist zu erledigen?" aria-label="Aufgabentitel" />
+              <select value={taskSubject} onChange={(event) => setTaskSubject(event.target.value)} aria-label="Fach"><SubjectOptions customSubjects={availableCustomSubjects} /></select>
+              <Input type="date" value={taskDue} onChange={(event) => setTaskDue(event.target.value)} aria-label="Abgabedatum" />
+              <Button type="submit"><Plus /> Eintragen</Button>
+            </form>
+            <div className="task-list-full">{data.tasks.map((task) => <article className={`task-item-full ${task.completed ? 'is-complete' : ''}`} key={task.id}>
+              <button type="button" onClick={() => toggleTask(task.id)} aria-label={`${task.title} ${task.completed ? 'wieder öffnen' : 'erledigen'}`}><CheckCircle2 /></button>
+              <span className="subject-dot" style={{ background: subjectColor(task.subject) }} />
+              <div><strong>{task.title}</strong><small>{task.subject} · {formatDue(task.due)}{task.shared ? ' · empfangen' : ''}</small></div>
+              <div className="task-actions"><Button variant="ghost" size="icon" onClick={() => openNoteForSubject(task.subject)} aria-label={`Notiz für ${task.subject} schreiben`}><NotebookPen /></Button><Button variant="ghost" size="icon" onClick={() => void shareTask(task)} aria-label={`${task.title} verschlüsselt teilen`} disabled={!selectedContact || cryptoBusy}><Share2 /></Button></div>
+            </article>)}{!data.tasks.length ? <div className="empty-task-state"><CheckCircle2 /><strong>Noch keine Aufgaben</strong><span>Trage oben deine erste Hausaufgabe ein.</span></div> : null}</div>
+          </section>
+          <aside className="panel notes-panel subject-notes-panel">
+            <div className="panel-heading"><div><span className="eyebrow">FACHNOTIZEN</span><h2>{noteSubject}</h2></div><span className="count-chip">{selectedSubjectNotes.length}</span></div>
+            <label className="field-label" htmlFor="note-subject">Fach<select id="note-subject" value={noteSubject} onChange={(event) => setNoteSubject(event.target.value)}><SubjectOptions customSubjects={availableCustomSubjects} includeGeneral /></select></label>
+            <Input value={noteTitle} onChange={(event) => setNoteTitle(event.target.value)} placeholder="Titel, z. B. Klausurthemen" aria-label="Titel der Notiz" />
+            <Textarea ref={noteInputRef} value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} placeholder={`Neue Notiz für ${noteSubject} …`} aria-label={`Neue Notiz für ${noteSubject}`} />
+            <Button onClick={saveNote}><Plus /> Notiz hinzufügen</Button>
+            <div className="subject-note-list">{selectedSubjectNotes.map((note) => <article key={note.id}><div><strong>{note.title}</strong><small>{new Intl.DateTimeFormat('de-DE', { day: '2-digit', month: '2-digit', year: '2-digit' }).format(new Date(note.updatedAt))}</small></div><p>{note.body}</p><button type="button" onClick={() => deleteNote(note.id)} aria-label={`${note.title} löschen`}><Trash2 /></button></article>)}{!selectedSubjectNotes.length ? <div className="empty-note-state"><NotebookPen /><span>Noch keine Notiz für {noteSubject}.</span></div> : null}</div>
+            <div className="custom-subject-row"><Input value={customSubjectDraft} onChange={(event) => setCustomSubjectDraft(event.target.value)} placeholder="Eigenes Schulfach" aria-label="Eigenes Schulfach" /><Button variant="outline" onClick={addCustomSubject}><Plus /> Fach</Button></div>
+            <p><Database /> Alles bleibt im angemeldeten Konto gespeichert.</p>
+          </aside>
+        </div> : null}
 
         {(view === 'classes' || view === 'feed' || view === 'games') ? (() => { const item = futureCopy[view]; const Icon = item.icon; return <section className="future-panel panel"><span className="future-icon"><Icon /></span><span className="eyebrow">WEITERER AUSBAU</span><h2>{item.title}</h2><p>{item.text}</p><Button variant="outline" onClick={() => setView('today')}>Zurück zur Offline-Version</Button></section>; })() : null}
 
         {view === 'profile' ? <div className="profile-layout profile-layout-expanded">
           <section className="panel profile-panel"><div className="panel-heading"><div><span className="eyebrow">AKTIVES LOKALES KONTO</span><h2>{data.user.name}</h2></div><CircleUserRound /></div><label htmlFor="profile-name">Name<Input id="profile-name" value={data.user.name} onChange={(event) => mutateAccount((current) => ({ ...current, user: { ...current.user, name: event.target.value } }))} /></label><label htmlFor="profile-class">Klasse<Input id="profile-class" value={data.user.className} onChange={(event) => mutateAccount((current) => ({ ...current, user: { ...current.user, className: event.target.value } }))} /></label><label htmlFor="profile-school">Schule<Input id="profile-school" value={data.user.school} onChange={(event) => mutateAccount((current) => ({ ...current, user: { ...current.user, school: event.target.value } }))} /></label><div className="identity-line"><KeyRound /><span><small>PERSÖNLICHE ID</small><strong>{data.user.id}</strong></span></div><p className="save-state"><Check /> Änderungen landen automatisch im getrennten Kontospeicher.</p></section>
           <section className="panel identity-panel"><div className="panel-heading"><div><span className="eyebrow">NUR EINMAL PRO KONTAKT</span><h2>Meine Kontaktkarte</h2></div><ShieldCheck /></div><Textarea className="code-box contact-code-box" value={ownContactCode} readOnly aria-label="Eigener Kontaktcode" /><div className="inline-actions"><Button variant="outline" onClick={() => void copyValue(ownContactCode, 'Kontaktcode')}><Copy /> Kopieren</Button><Button onClick={() => void shareValue(ownContactCode, 'Schultag Kontaktkarte')}><Share2 /> AirDrop</Button></div></section>
-          <section className="panel contact-panel"><div className="panel-heading"><div><span className="eyebrow">KONTAKT HINZUFÜGEN</span><h2>Kontaktkarte einfügen</h2></div><UserPlus /></div><Textarea className="code-box contact-code-box" value={contactCode} onChange={(event) => setContactCode(event.target.value)} placeholder="SCHULTAG-CONTACT-1.…" aria-label="Kontaktcode einfügen" /><Button onClick={() => void addContact()} disabled={!contactCode.trim() || cryptoBusy}><ShieldCheck /> ID prüfen und speichern</Button></section>
-          <section className="panel accounts-panel"><div className="panel-heading"><div><span className="eyebrow">GETRENNTE OFFLINE-SPEICHER</span><h2>Konten auf diesem Gerät</h2></div><UsersRound /></div><div className="account-list">{accounts.map((account) => <button type="button" key={account.id} className={account.id === data.user.id ? 'is-active' : ''} onClick={() => void switchAccount(account.id)} disabled={cryptoBusy}><span className="avatar">{initials(account.name)}</span><span><strong>{account.name}</strong><small>{account.id}</small></span>{account.id === data.user.id ? <CheckCircle2 /> : <ChevronRight />}</button>)}</div><div className="new-account-row"><Input value={newAccountName} onChange={(event) => setNewAccountName(event.target.value)} placeholder="Name für neues Konto" /><Button onClick={() => void createLocalAccount()} disabled={cryptoBusy}><Plus /> Konto</Button></div></section>
+          <section className="panel contact-panel"><div className="panel-heading"><div><span className="eyebrow">KONTAKTE DAUERHAFT SPEICHERN</span><h2>Kontaktkarte hinzufügen</h2></div><UserPlus /></div><Textarea className="code-box contact-code-box" value={contactCode} onChange={(event) => setContactCode(event.target.value)} placeholder="SCHULTAG-CONTACT-1.…" aria-label="Kontaktcode einfügen" /><Button onClick={() => void addContact()} disabled={!contactCode.trim() || cryptoBusy}><ShieldCheck /> ID prüfen und speichern</Button><div className="contact-manager">{data.contacts.map((contact) => <label key={contact.card.id} htmlFor={`contact-${contact.card.id}`}><span className="avatar">{initials(contactName(contact))}</span><span><small>Gespeicherter Name</small><Input id={`contact-${contact.card.id}`} value={contact.displayName} onChange={(event) => renameContact(contact.card.id, event.target.value)} onBlur={() => normalizeContactName(contact.card.id)} /><em>{contact.card.id}</em></span><ShieldCheck /></label>)}{!data.contacts.length ? <p>Noch keine Kontakte gespeichert.</p> : null}</div></section>
+          <section className="panel accounts-panel"><div className="panel-heading"><div><span className="eyebrow">LOKALES KONTO</span><h2>Anmeldung & Sicherheit</h2></div><UsersRound /></div><div className="signed-in-account"><span className="avatar">{initials(data.user.name)}</span><span><small>Angemeldet als</small><strong>{data.user.name}</strong><em>{data.user.id}</em></span><CheckCircle2 /></div><label className="field-label" htmlFor="change-pin">Neue PIN<Input id="change-pin" type="password" inputMode="numeric" pattern="[0-9]*" minLength={4} maxLength={8} value={profilePinDraft} onChange={(event) => setProfilePinDraft(event.target.value.replace(/\D/gu, '').slice(0, 8))} placeholder="4 bis 8 Ziffern" autoComplete="new-password" /></label><div className="account-security-actions"><Button variant="outline" onClick={() => void changePin()} disabled={authBusy || !profilePinDraft}><KeyRound /> PIN ändern</Button><Button variant="destructive" onClick={() => void logout()} disabled={authBusy}><LogOut /> Abmelden</Button></div><p>Nach dem Abmelden bleiben Kontakte und Schulsachen erhalten. Ein weiteres Konto kannst du auf der Anmeldeseite erstellen.</p></section>
           <section className="panel backup-panel"><div className="panel-heading"><div><span className="eyebrow">VERSCHLÜSSELTES BACKUP</span><h2>Konto sichern</h2></div><HardDrive /></div><p>Enthält ID, private Schlüssel, Kontakte, Nachrichten, Aufgaben, Notizen und Warteschlange. Das Passwort wird nicht gespeichert.</p><Input type="password" value={backupPassword} onChange={(event) => setBackupPassword(event.target.value)} placeholder="Backup-Passwort · mindestens 6 Zeichen" aria-label="Backup-Passwort" /><div className="backup-actions"><Button onClick={() => void exportBackup()} disabled={cryptoBusy}><Download /> Exportieren</Button><Button variant="outline" onClick={() => importInputRef.current?.click()} disabled={cryptoBusy}><Upload /> Wiederherstellen</Button></div><input ref={importInputRef} className="sr-file-input" type="file" accept="application/json,.json" onChange={(event) => void importBackup(event)} /></section>
           <section className="panel storage-panel"><div className="storage-summary"><span className="install-icon"><Database /></span><div><span className="eyebrow">GERÄTESPEICHER</span><h2>{storagePersistent ? 'Dauerhafter Speicher aktiv' : 'IndexedDB aktiv'}</h2><p>{usedStorage === null ? 'Lokale Belegung wird vom Browser verwaltet.' : `${formatBytes(usedStorage)} für App und Daten belegt.`}</p></div></div>{!storagePersistent ? <Button variant="outline" onClick={() => void makeStoragePersistent()}><HardDrive /> Dauerhaften Speicher anfragen</Button> : null}</section>
           <section className="panel install-panel"><span className="install-icon"><Share2 /></span><div><span className="eyebrow">AUF IPAD / IPHONE</span><h2>Zum Home-Bildschirm</h2><p>Safari → Teilen → „Zum Home-Bildschirm“. App-Dateien werden für Offline-Starts zwischengespeichert.</p></div></section>

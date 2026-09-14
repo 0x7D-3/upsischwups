@@ -1,4 +1,4 @@
-# Schultag PWA — Testversion 0.3.1
+# Schultag PWA — Testversion 0.4
 
 „Alles, was du während eines Schultags brauchst – selbst wenn das WLAN nicht funktioniert.“
 
@@ -7,14 +7,17 @@ Schultag ist ein kostenloser Local-First-Prototyp für iPad und iPhone. Profile,
 ## Was in diesem Test funktioniert
 
 - mehrere lokale Konten mit eigener dauerhafter Datenablage und persönlicher, aus den öffentlichen Schlüsseln abgeleiteter ID
+- einmalige Profileinrichtung und lokale Anmeldung mit einer 4- bis 8-stelligen PIN
 - Kontaktkarten, die nur einmal per AirDrop, Kopieren oder einem anderen Kanal ausgetauscht werden müssen
+- dauerhaft gespeicherte Kontakte mit frei bearbeitbaren richtigen Anzeigenamen
 - Ende-zu-Ende verschlüsselte und signierte Textnachrichten
 - lokale Warteschlange mit den Zuständen `ausstehend`, `unterwegs` und `angekommen`
 - signierte Zustellbestätigungen
 - verschlüsseltes Store-and-Forward: ein verbundenes Gerät kann ein unlesbares Paket begrenzt zwischenspeichern und später weiterreichen
 - automatischer Austausch aller fehlenden Pakete und Bestätigungen nach einer WebRTC-Verbindung
-- Aufgaben erstellen, abhaken und verschlüsselt teilen
-- persönliche Notizen
+- Hausaufgaben mit Fach und Abgabedatum erstellen, abhaken und verschlüsselt teilen
+- vollständige NRW-Oberstufen-Fächerliste sowie eigene Schulfächer
+- getrennte Fachnotizen; von jeder Aufgabe kann direkt der passende Notizbereich geöffnet werden
 - passwortverschlüsselte Konto-Backups einschließlich ID und privater Schlüssel
 - installierbare PWA mit vollständigem Offline-App-Cache
 - kostenloser GitHub-Pages-Workflow
@@ -35,7 +38,7 @@ Für automatische Gerätesuche und echte Direktverbindungen ohne vorhandenes Net
 
 1. Öffne die veröffentlichte Seite auf beiden Geräten einmal vollständig in Safari.
 2. Tippe auf `Teilen → Zum Home-Bildschirm` und starte danach die installierte App.
-3. Lege auf jedem Gerät unter `Profil` ein eigenes Konto mit eigenem Namen an.
+3. Richte auf jedem Gerät einmalig ein Profil mit vollständigem Namen, Stufe, Schule und lokaler PIN ein.
 4. Teile die jeweilige Kontaktkarte per AirDrop und füge sie auf dem anderen Gerät ein. Das ist nur einmal nötig.
 5. Verbinde beide Geräte mit demselben WLAN oder persönlichen Hotspot.
 6. Öffne auf beiden Geräten `Nearby`. Gerät A erstellt den Start-Code, Gerät B erzeugt daraus den Antwort-Code, Gerät A übernimmt die Antwort.
@@ -45,7 +48,7 @@ Um Store-and-Forward zu testen, werden drei getrennte Konten auf drei Browser-In
 
 ## Datensicherheit im Prototyp
 
-Nachrichten und geteilte Aufgaben werden vor der Weitergabe mit einem einmaligen P-256-Schlüsselpaar und AES-GCM verschlüsselt und vom Absender mit ECDSA signiert. Relaisgeräte erhalten keinen Klartext. Die App-Daten selbst liegen im vom Browser verwalteten Gerätespeicher; sie sind nicht zusätzlich als gesamte Datenbank verschlüsselt. Deshalb schützt das Gerätepasswort weiterhin den lokalen Zugriff.
+Nachrichten und geteilte Aufgaben werden vor der Weitergabe mit einem einmaligen P-256-Schlüsselpaar und AES-GCM verschlüsselt und vom Absender mit ECDSA signiert. Relaisgeräte erhalten keinen Klartext. Die lokale PIN sperrt die Benutzeroberfläche, verschlüsselt aber nicht die gesamte Browserdatenbank. Deshalb schützt das Gerätepasswort weiterhin den lokalen Zugriff.
 
 Safari kann Website-Daten unter besonderen Umständen entfernen. Unter `Profil` kann dauerhafter Speicher angefragt werden; zusätzlich sollten wichtige Konten regelmäßig als passwortverschlüsseltes Backup exportiert werden. Ohne dieses Backup ist eine gelöschte persönliche ID nicht wiederherstellbar.
 
